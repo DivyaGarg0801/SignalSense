@@ -2,6 +2,8 @@ from ultralytics import YOLO
 import cv2
 import numpy as np
 import tkinter as tk
+import serial
+import time
 
 # Load YOLOv8 model
 model = YOLO("yolov8n.pt")
@@ -14,7 +16,15 @@ image_paths = ["1.png.jpg", "2.png.jpg", "3.png.jpg", "4.png.jpg"]
 annotated_images = []
 frame_results = []
 
+# Signal timing constants
+time_per_vehicle = 1  # seconds
+base_time = 5         # base green time
+yellow_time = 3       # fixed yellow time
+
 # Process each image
+green_times = []
+vehicle_counts = []
+
 for idx, img_path in enumerate(image_paths):
     img = cv2.imread(img_path)
     if img is None:
@@ -24,7 +34,7 @@ for idx, img_path in enumerate(image_paths):
     results = model(img)[0]
     vehicle_count = 0
 
-    # Detect and annotate vehicles
+    # Detect vehicles
     for box in results.boxes:
         cls = int(box.cls.item())
         label = model.names[cls]
@@ -35,22 +45,31 @@ for idx, img_path in enumerate(image_paths):
             cv2.putText(img, label, (x1, y1 - 5),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
-    # Timer logic
-    time_per_vehicle = 1  # seconds per vehicle
-    base_time = 5  # minimum allocated time
-    allocated_time = base_time + vehicle_count * time_per_vehicle
-
-    # Display on image
-    cv2.putText(img, f"Total Vehicles: {vehicle_count}", (10, 30),
-                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-    cv2.putText(img, f"Time Allocated: {allocated_time} sec", (10, 70),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 0), 2)
-
-    # Store results
+    green_time = base_time + vehicle_count * time_per_vehicle
+    green_times.append(green_time)
+    vehicle_counts.append(vehicle_count)
     annotated_images.append(img)
-    frame_results.append((idx + 1, vehicle_count, allocated_time))
 
-# Resize images to make grid
+# After getting all green times, calculate yellow and red
+for idx in range(4):
+    green = green_times[idx]
+    vehicles = vehicle_counts[idx]
+    red = sum(green_times[i] + yellow_time for i in range(4) if i != idx)
+
+    # Annotate times on image
+    img = annotated_images[idx]
+    cv2.putText(img, f"Total Vehicles: {vehicles}", (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2)
+    cv2.putText(img, f"Green: {green}s", (10, 70),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+    cv2.putText(img, f"Yellow: {yellow_time}s", (10, 110),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+    cv2.putText(img, f"Red: {red}s", (10, 150),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+
+    frame_results.append((idx + 1, vehicles, green, yellow_time, red))
+
+# Resize images for grid
 resized_images = [cv2.resize(img, (640, 480)) for img in annotated_images]
 top_row = np.hstack((resized_images[0], resized_images[1]))
 bottom_row = np.hstack((resized_images[2], resized_images[3]))
@@ -58,59 +77,58 @@ grid_image = np.vstack((top_row, bottom_row))
 
 # Show final image in OpenCV window
 cv2.imshow("Vehicle Detection Grid", grid_image)
-cv2.imwrite("result_grid.png", grid_image)  # Optional: Save the grid image
+cv2.imwrite("result_grid.png", grid_image)
 cv2.waitKey(0)
 cv2.destroyAllWindows()
 
-# Function to show results window using tkinter
+# Tkinter result window
 def show_result_window():
     window = tk.Tk()
-    window.title("Result Window")
-    window.geometry("700x400")  # Increased window size
+    window.title("Traffic Signal Timings")
+    window.geometry("850x500")
 
-    for i, (frame_no, vehicle_count, time_alloc) in enumerate(frame_results):
+    for i, (frame_no, vehicle_count, green, yellow, red) in enumerate(frame_results):
         row = i // 2
         col = i % 2
 
-        # Heading (in red)
-        heading = tk.Label(window, text=f"Result for Frame {frame_no}",
+        heading = tk.Label(window, text=f"Frame {frame_no} Result",
                            font=("Arial", 14, "bold"), fg="red", padx=10, pady=5)
-        heading.grid(row=row*2, column=col, sticky="w", padx=20)
+        heading.grid(row=row*3, column=col, sticky="w", padx=20)
 
-        # Vehicle and time info (in black)
         info = tk.Label(window,
-                        text=f"Total Number of Vehicles : {vehicle_count}\nTime Allocated : {time_alloc} seconds",
+                        text=f"Total Vehicles: {vehicle_count}\n"
+                             f"🟩 Green: {green} s\n"
+                             f"🟨 Yellow: {yellow} s\n"
+                             f"🟥 Red: {red} s",
                         font=("Arial", 12), fg="black", justify="left", padx=10)
-        info.grid(row=row*2 + 1, column=col, sticky="w", padx=20)
+        info.grid(row=row*3 + 1, column=col, sticky="w", padx=20)
 
-    # Button to close the window
-    tk.Button(window, text="Show Resultant Frame", font=("Arial", 12),
-              command=window.destroy).grid(row=5, columnspan=2, pady=20)
+    tk.Button(window, text="Close", font=("Arial", 12),
+              command=window.destroy).grid(row=6, columnspan=2, pady=20)
 
     window.mainloop()
 
-
-# Show the tkinter result window
+# Show result window
 show_result_window()
-# Store results
-annotated_images.append(img)
-frame_results.append((idx + 1, vehicle_count, allocated_time))
 
-import serial
-import time
+# Send Frame 1 Data to Arduino (unchanged)
 
-# Send only Frame 1 data
-frame_1_data = frame_results[0]
-vehicle_count = frame_1_data[1]
-allocated_time = frame_1_data[2]
+# Construct a message for all 4 lanes
+all_data = []
+for frame in frame_results:
+    v, g, y, r = frame[1], frame[2], frame[3], frame[4]
+    all_data.append(f"{v},{g},{y},{r}")
 
-data_to_send = f"{vehicle_count},{allocated_time}\n"  # Sending in CSV format
+# Join all 4 with ';' and end with newline
+full_data = ";".join(all_data) + "\n"
+print(f"Sending all lane data to Arduino: {full_data}")
 
+# Send to Arduino
 try:
-    arduino = serial.Serial(port='COM5', baudrate=9600, timeout=2)  # Change COM port as needed
+    arduino = serial.Serial(port='COM5', baudrate=9600, timeout=2)
     time.sleep(2)
-    arduino.write(data_to_send.encode())
-    print(f"Sent to Arduino: {data_to_send}")
+    arduino.write(full_data.encode())
+    print("Data sent successfully.")
     arduino.close()
 except Exception as e:
     print(f"Error communicating with Arduino: {e}")
